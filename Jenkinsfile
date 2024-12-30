@@ -1,6 +1,6 @@
 def COLOR_MAP = [
-    'SUCCESS' :'good'
-    'FAILURE' : 'danger'
+    'SUCCESS' :'good',
+    'FAILURE' : 'danger',
 ]
 pipeline{
     agent any
@@ -8,11 +8,17 @@ pipeline{
         maven "MAVEN3.9"
         jdk   "JDK17"
     }
-
+    environment{
+        registryCredential='ecr:us-east-1:awscreds'
+        imageName='992382731968.dkr.ecr.us-east-1.amazonaws.com/vprofileappimage'
+        vprofileRegistry='https://992382731968.dkr.ecr.us-east-1.amazonaws.com'
+        cluster='vprofileapp'
+        service='vprofileappsvc'
+    }
     stages{
         stage('Fetch code') {
             steps{
-                git branch: 'atom', url : 'https://github.com/hkhcoder/vprofile-project.git'
+                git branch: 'docker', url : 'https://github.com/hkhcoder/vprofile-project.git'
             }
         }
 
@@ -57,32 +63,45 @@ pipeline{
               }
             }
         }
-        stage("Quality Gate") {
-            steps {
-              timeout(time: 1, unit: 'HOURS') {
-                waitForQualityGate abortPipeline: true
+            stage("Quality Gate") {
+                steps {
+                timeout(time: 1, unit: 'HOURS') {
+                    waitForQualityGate abortPipeline: true
               }
             }
           }
-        stage("Upload Artifact"){
-            steps{
-                nexusArtifactUploader(
-                nexusVersion: 'nexus3',
-            protocol: 'http',
-            nexusUrl: '172.31.29.204:8081',
-            groupId: 'QA',
-            version: "${env.BUILD_ID}-${env.BUILD_TIMESTAMP}",
-            repository: 'vprofile-repo',
-            credentialsId: 'nexuslogin',
-            artifacts: [
-                [artifactId: 'vproapp',
-                 classifier: '',
-                file: 'target/vprofile-v2.war',
-                type: 'war']
-                    ]
-                )
+        stage('Build App Image') {
+        steps {
+       
+             script {
+                  dockerImage = docker.build( imageName + ":$BUILD_NUMBER", "./Docker-files/app/multistage/")
+             }
+     }
+    
+    }
+
+    stage('Upload App Image') {
+          steps{
+            script {
+              docker.withRegistry( vprofileRegistry, registryCredential ) {
+                dockerImage.push("$BUILD_NUMBER")
+                dockerImage.push('latest')
+              }
             }
+          }
+     }
+    stage('Deploy to ecs') {
+          steps {
+        withAWS(credentials: 'awscreds', region: 'us-east-1') {
+          sh 'aws ecs update-service --cluster ${cluster} --service ${service} --force-new-deployment'
         }
+      }
+     }
+     stage('Remove Container Image'){
+        steps{
+            sh 'docker rmi -f $(docker images -a -q)'
+        }
+     }
 
     }
     post {
@@ -94,4 +113,3 @@ pipeline{
         }
     }
 }
-
